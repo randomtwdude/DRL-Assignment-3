@@ -16,10 +16,10 @@ from nes_py.wrappers import JoypadSpace
 import gym_super_mario_bros
 from gym_super_mario_bros.actions import COMPLEX_MOVEMENT
 
-from tensordict import TensorDict
-from torchrl.data import TensorDictReplayBuffer, LazyMemmapStorage
+# Let ε<0
+MATH_EPSILON = -1e-6
 
-# Fake frames let's goooooo
+# Fake frames
 class NvidiaFrameGeneration(gym.Wrapper):
     def __init__(self, env, n_frame):
         super().__init__(env)
@@ -126,8 +126,8 @@ class Yugi(nn.Module):
 # Fenwick Tree
 class Fenwick:
     def __init__(self, capacity):
-        self.root = np.zeros(capacity, dtype = np.float64) # original values
-        self.tree = np.zeros(capacity, dtype = np.float64)
+        self.root = np.zeros(capacity, dtype = np.float32) # original values
+        self.tree = np.zeros(capacity, dtype = np.float32)
         self.cap  = capacity
 
     # sum[0:n+1]
@@ -137,6 +137,10 @@ class Fenwick:
             total += self.tree[n]
             n = (n & (n + 1)) - 1
         return total
+
+    # get raw values
+    def fetch(self, n):
+        return self.root[n]
 
     # Just use this
     def assign(self, n, value):
@@ -150,32 +154,94 @@ class Fenwick:
             self.tree[n] += amount
             n = n | (n + 1)
 
+    # binary search
+    def retrieve(self, upperbound):
+        left, right = 0, self.cap - 1
+        while left < right:
+            mid = (left + right) // 2
+            if self.sum(mid) < upperbound:
+                left = mid + 1
+            else:
+                right = mid
+        return left
 
-# to be enhanced
 class ReplayBuffer:
-    def __init__(self, capacity, batch_size = 128):
-        self.buffer = TensorDictReplayBuffer(storage = LazyMemmapStorage(capacity), batch_size = batch_size)
+    def __init__(self, capacity, obs_size, batch_size = 128,
+        # PER
+        alpha = 0.6
+    ):
+        self.obs        = np.zeros([capacity, *obs_size], dtype=np.float32)
+        self.next_obs   = np.zeros([capacity, *obs_size], dtype=np.float32)
+        self.acts       = np.zeros([capacity], dtype=np.float32)
+        self.rewards    = np.zeros([capacity], dtype=np.float32)
+        self.dones      = np.zeros(capacity, dtype=np.float32)
+        self.capacity   = capacity
+        self.ptr        = 0
+        self.size       = 0
+        self.batch_size = batch_size
+
+        self.priorities   = Fenwick(capacity)
+        self.max_priority = 1.0
+        self.alpha        = alpha
 
     def __len__(self):
-        return len(self.buffer)
+        return self.size
 
-    def add(self, state, act, next_state, reward, done):
+    def add(self, obs, act, next_obs, reward, done):
+        self.obs[self.ptr] = obs
+        self.acts[self.ptr] = act
+        self.next_obs[self.ptr] = next_obs
+        self.rewards[self.ptr] = reward
+        self.dones[self.ptr] = done
 
-        def first_if_tuple(x):
-            return x[0] if isinstance(x, tuple) else x
+        self.priorities.assign(self.ptr, self.max_priority ** self.alpha)
 
-        state = first_if_tuple(state).__array__()
-        next_state = first_if_tuple(next_state).__array__()
+        self.ptr = (self.ptr + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
 
-        td = TensorDict({
-            "states": torch.tensor(state),
-            "acts": torch.tensor([act]),
-            "states2": torch.tensor(next_state),
-            "rewards": torch.tensor([reward]),
-            "dones": torch.tensor([done]),
-        }, batch_size=[])
+    def sample(self, beta = 0.4, number = 32):
+        assert len(self) >= number
 
-        self.buffer.add(td)
+        p_total = self.priorities.sum(len(self) - 1)
 
-    def sample(self):
-        return self.buffer.sample()
+        # get some indices with weights
+        def sample_proportional():
+            indices = []
+            segment = p_total / number
+
+            for i in range(number):
+                a = segment * i
+                b = segment * (i + 1)
+                upperbound = random.uniform(a, b)
+                idx = self.priorities.retrieve(upperbound)
+                indices.append(idx)
+
+            return indices
+
+        indices  = sample_proportional()
+        
+        obs      = self.obs[indices]
+        next_obs = self.next_obs[indices]
+        acts     = self.acts[indices]
+        rewards  = self.rewards[indices]
+        dones    = self.dones[indices]
+
+        ps       = self.priorities.root[:len(self)] / p_total
+        weights  = (len(self) * ps) ** (-1 * beta)
+        weights  = weights / weights.max()
+
+        return dict(
+            obs      = obs,
+            next_obs = next_obs,
+            acts     = acts,
+            rewards  = rewards,
+            dones    = dones,
+            weights  = weights,
+            indices  = indices,
+        )
+
+    def update(self, indices, priorities):
+        for i, pr in zip(indices, priorities):
+            new_pr = pr ** self.alpha
+            self.priorities.assign(i, new_pr)
+            self.max_priority = max(self.max_priority, new_pr)
