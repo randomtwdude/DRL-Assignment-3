@@ -1,10 +1,11 @@
 from common import *
 from student_agent import Agent
+import time
 
 class TrainingAgent(Agent):
     def __init__(self, env,
         obs_size, act_size,
-        epsilon_max = 1.0, epsilon_min = 0.02, epsilon_decay = 0.9999, gamma = 0.99,
+        k_max = 5.0, k_min = 0.1, k_decay = 0.9999, gamma = 0.99,
         replay_buf_size = 20000, batch_size = 128, update_period = 300,
         learning_rate = 1e-4, load = False,
         alpha = 0.6, beta = 0.5
@@ -13,12 +14,12 @@ class TrainingAgent(Agent):
 
         # parameters
         if not load:
-            self.epsilon = epsilon_max
+            self.temp    = k_max
             self.beta    = beta
 
         self.env           = env
-        self.epsilon_min   = epsilon_min
-        self.epsilon_decay = epsilon_decay
+        self.k_min         = k_min
+        self.k_decay       = k_decay
         self.gamma         = gamma
         self.batch_size    = batch_size
         self.update_period = update_period
@@ -36,13 +37,15 @@ class TrainingAgent(Agent):
         self.optimizer = optim.Adam(self.dqn.parameters(), lr = learning_rate)
 
     def act(self, observation):
-        if self.epsilon > np.random.random():
-            selected_action = self.env.action_space.sample()
-        else:
-            state = observation[0].__array__() if isinstance(observation, tuple) else observation.__array__()
-            state = torch.tensor(state, device = self.device).unsqueeze(0)
-            selected_action = self.dqn(state).argmax().item()
+        state = observation[0].__array__() if isinstance(observation, tuple) else observation.__array__()
+        state = torch.tensor(state, device = self.device).unsqueeze(0)
+        ratings = self.dqn(state).detach().numpy().squeeze()
 
+        ratings = ratings - np.max(ratings)
+        ratings_exp = np.exp(ratings / self.temp)
+        probs = ratings_exp / np.sum(ratings_exp)
+
+        selected_action = np.random.choice(range(self.act_size), p = probs)
         return selected_action
 
     def step(self, obs, action):
@@ -63,8 +66,8 @@ class TrainingAgent(Agent):
         nn.utils.clip_grad_norm_(self.dqn.parameters(), 10.0)
         self.optimizer.step()
 
-        # decay epsilon
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+        # decrease temperature
+        self.temp = max(self.k_min, self.temp * self.k_decay)
 
         # hard update
         self.update_until -= 1
@@ -101,6 +104,16 @@ class TrainingAgent(Agent):
 
 # Training loop
 
+# Set random seed
+"""
+SEED = 727
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(SEED)
+"""
+
 env = gym_super_mario_bros.make('SuperMarioBros-v0')
 env = JoypadSpace(env, COMPLEX_MOVEMENT)
 
@@ -115,16 +128,19 @@ env = FrameStacker(env, num_stack = frame_batch)
 
 # Train
 agent = TrainingAgent(env, (frame_batch, *resolution), 12,
-    epsilon_max = 1.0, epsilon_min = 0.02, epsilon_decay = 0.9999, gamma = 0.95,
+    k_max = 10.0, k_min = 0.1, k_decay = 0.99999, gamma = 0.95,
     replay_buf_size = 100000, batch_size = 192, update_period = 384,
     learning_rate = 1e-4, load = False,
     alpha = 0.6, beta = 0.5
 )
 
-NUM_EPISODES = 50
-SAVE_INTERVAL = 2
+NUM_EPISODES = 1000
+SAVE_INTERVAL = 10
 
 for episode in range(NUM_EPISODES):
+    start = time.time()
+    frame_count = 0
+
     # Reset the environment
     obs = agent.env.reset()
     done = False
@@ -152,19 +168,23 @@ for episode in range(NUM_EPISODES):
         # Update the state and total reward
         total_reward += reward
         obs = next_obs
+        frame_count += 1
 
         # Mario
         if info["flag_get"]:
             break
 
-    print(f"Episode {episode}, Reward: {total_reward}, Eps: {agent.epsilon}")
+    end = time.time()
+    elapsed = end - start
+
+    print(f"[{elapsed:.0f}s] Episode {episode}\tReward {total_reward}\tTemp {agent.temp:.2f}\t{frame_count / elapsed}FPS")
 
     if (episode + 1) % SAVE_INTERVAL == 0:
         name = f"thing_at_{episode + 1}.bin"
         torch.save(
             dict(
                 model = agent.dqn.state_dict(),
-                epsilon = agent.epsilon,
+                temp = agent.temp,
                 beta = agent.beta
             ),
             name

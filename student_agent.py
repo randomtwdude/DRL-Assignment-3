@@ -13,8 +13,8 @@ class Agent(object):
             with open("thing_at_2.bin", "rb") as data:
                 stuff = torch.load(data)
                 self.dqn.load_state_dict(stuff["model"])
-                self.epsilon = stuff["epsilon"]
-                self.beta    = stuff["beta"]
+                self.temp = stuff["temp"]
+                self.beta = stuff["beta"]
 
     def act(self, observation):
         state = observation[0].__array__() if isinstance(observation, tuple) else observation.__array__()
