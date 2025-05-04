@@ -129,6 +129,7 @@ class Fenwick:
         self.root = np.zeros(capacity, dtype = np.float32) # original values
         self.tree = np.zeros(capacity, dtype = np.float32)
         self.cap  = capacity
+        self.size = 0
 
     # sum[0:n+1]
     def sum(self, n):
@@ -145,6 +146,9 @@ class Fenwick:
     # Just use this
     def assign(self, n, value):
         current = self.root[n]
+        if current == 0.0:
+            self.size += 1
+            assert self.size <= self.cap
         self.increase(n, value - current)
         self.root[n] = value
 
@@ -156,7 +160,7 @@ class Fenwick:
 
     # binary search
     def retrieve(self, upperbound):
-        left, right = 0, self.cap - 1
+        left, right = 0, self.size - 1
         while left < right:
             mid = (left + right) // 2
             if self.sum(mid) < upperbound:
@@ -175,6 +179,7 @@ class ReplayBuffer:
         self.acts       = np.zeros([capacity], dtype=np.float32)
         self.rewards    = np.zeros([capacity], dtype=np.float32)
         self.dones      = np.zeros(capacity, dtype=np.float32)
+
         self.capacity   = capacity
         self.ptr        = 0
         self.size       = 0
@@ -199,34 +204,35 @@ class ReplayBuffer:
         self.ptr = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
-    def sample(self, beta = 0.4, number = 32):
-        assert len(self) >= number
+    def sample(self, beta = 0.4):
+        assert len(self) >= self.batch_size
 
         p_total = self.priorities.sum(len(self) - 1)
 
         # get some indices with weights
         def sample_proportional():
             indices = []
-            segment = p_total / number
+            segment = p_total / self.batch_size
 
-            for i in range(number):
+            for i in range(self.batch_size):
                 a = segment * i
                 b = segment * (i + 1)
                 upperbound = random.uniform(a, b)
                 idx = self.priorities.retrieve(upperbound)
+                assert idx < len(self)
                 indices.append(idx)
 
             return indices
 
         indices  = sample_proportional()
-        
+
         obs      = self.obs[indices]
         next_obs = self.next_obs[indices]
         acts     = self.acts[indices]
         rewards  = self.rewards[indices]
         dones    = self.dones[indices]
 
-        ps       = self.priorities.root[:len(self)] / p_total
+        ps       = self.priorities.root[indices] / p_total
         weights  = (len(self) * ps) ** (-1 * beta)
         weights  = weights / weights.max()
 

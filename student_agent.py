@@ -1,6 +1,7 @@
 from common import *
 
 class Agent(object):
+    # todo: remove sizes
     def __init__(self, obs_size, act_size, load = True):
         self.obs_size = obs_size
         self.act_size = act_size
@@ -10,7 +11,7 @@ class Agent(object):
         self.dqn    = Yugi(self.obs_size, self.act_size).to(self.device)
 
         if load:
-            with open("thing_at_2.bin", "rb") as data:
+            with open("thing_at_10.bin", "rb") as data:
                 stuff = torch.load(data)
                 self.dqn.load_state_dict(stuff["model"])
                 self.temp = stuff["temp"]

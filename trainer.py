@@ -37,8 +37,7 @@ class TrainingAgent(Agent):
         self.optimizer = optim.Adam(self.dqn.parameters(), lr = learning_rate)
 
     def act(self, observation):
-        state = observation[0].__array__() if isinstance(observation, tuple) else observation.__array__()
-        state = torch.tensor(state, device = self.device).unsqueeze(0)
+        state = torch.tensor(observation, device = self.device).unsqueeze(0)
         ratings = self.dqn(state).detach().numpy().squeeze()
 
         ratings = ratings - np.max(ratings)
@@ -59,12 +58,21 @@ class TrainingAgent(Agent):
             return None
 
         samples = self.mem.sample()
-        loss    = self._calculate_loss(samples)
+        indices = samples["indices"]
+        weights = torch.FloatTensor(samples["weights"].reshape(-1, 1)).to(self.device)
+
+        elementwise_loss = self._calculate_loss(samples)
+        loss             = torch.mean(elementwise_loss * weights)
 
         self.optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(self.dqn.parameters(), 10.0)
         self.optimizer.step()
+
+        # update priority
+        loss_for_prior = elementwise_loss.detach().cpu().numpy()
+        new_priorities = loss_for_prior - MATH_EPSILON
+        self.mem.update(indices, new_priorities)
 
         # decrease temperature
         self.temp = max(self.k_min, self.temp * self.k_decay)
@@ -92,14 +100,19 @@ class TrainingAgent(Agent):
         # G_t   = r + gamma * v(s_{t+1})  if state != Terminal
         #       = r                       otherwise
         curr_q_value = self.dqn(states).gather(1, actions)
-        next_q_value = self.dqn_target(next_states) \
-            .gather(1, self.dqn(next_states).argmax(dim = 1, keepdim = True)) \
-            .detach()
+
+        # select with softmax weights
+        with torch.no_grad():
+            q_next_online = self.dqn(next_states)
+
+            q_next_online = q_next_online / self.temp
+            next_w = torch.softmax(q_next_online, dim = 1)
+
+            q_next_target = self.dqn_target(next_states)
+            next_q_value = torch.sum(q_next_target * next_w, dim = 1, keepdim = True)
 
         target = (rewards + self.gamma * next_q_value * (~dones)).to(dev)
-
-        # calculate dqn loss
-        loss = F.smooth_l1_loss(curr_q_value, target)
+        loss = F.smooth_l1_loss(curr_q_value, target, reduction = "none")
         return loss
 
 # Training loop
@@ -117,7 +130,7 @@ if torch.cuda.is_available():
 env = gym_super_mario_bros.make('SuperMarioBros-v0')
 env = JoypadSpace(env, COMPLEX_MOVEMENT)
 
-resolution = (91, 91)
+resolution = (84, 84)
 frame_batch = 4
 
 # apply preprocessing (the chain only works like this, do not change)
@@ -128,14 +141,14 @@ env = FrameStacker(env, num_stack = frame_batch)
 
 # Train
 agent = TrainingAgent(env, (frame_batch, *resolution), 12,
-    k_max = 10.0, k_min = 0.1, k_decay = 0.99999, gamma = 0.95,
-    replay_buf_size = 100000, batch_size = 192, update_period = 384,
+    k_max = 10.0, k_min = 0.25, k_decay = 0.9999, gamma = 0.92,
+    replay_buf_size = 20000, batch_size = 192, update_period = 8192,
     learning_rate = 1e-4, load = False,
-    alpha = 0.6, beta = 0.5
+    alpha = 0.6, beta = 0.4
 )
 
 NUM_EPISODES = 1000
-SAVE_INTERVAL = 10
+SAVE_INTERVAL = 25
 
 for episode in range(NUM_EPISODES):
     start = time.time()
@@ -159,11 +172,8 @@ for episode in range(NUM_EPISODES):
         next_obs, reward, done, info = agent.step(obs, act)
 
         # train
-        agent.update()
-
-        # increase beta
-        fraction = min((episode + 1) / NUM_EPISODES, 1.0)
-        agent.beta = agent.beta + fraction * (1.0 - agent.beta)
+        if frame_count % 4 == 0:
+            agent.update()
 
         # Update the state and total reward
         total_reward += reward
@@ -174,10 +184,14 @@ for episode in range(NUM_EPISODES):
         if info["flag_get"]:
             break
 
+    # increase beta
+    fraction = min((episode + 1) / NUM_EPISODES, 1.0)
+    agent.beta = agent.beta + fraction * (1.0 - agent.beta)
+
     end = time.time()
     elapsed = end - start
 
-    print(f"[{elapsed:.0f}s] Episode {episode}\tReward {total_reward}\tTemp {agent.temp:.2f}\t{frame_count / elapsed}FPS")
+    print(f"[{elapsed:.0f}s]\tEpisode\t{episode}\tReward\t{total_reward}\tTemp\t{agent.temp:.2f}\t{frame_count / elapsed:.2f}FPS")
 
     if (episode + 1) % SAVE_INTERVAL == 0:
         name = f"thing_at_{episode + 1}.bin"
