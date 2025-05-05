@@ -18,8 +18,7 @@ class Agent(object):
                 self.beta = stuff["beta"]
 
     def act(self, observation):
-        state = observation[0].__array__() if isinstance(observation, tuple) else observation.__array__()
-        state = torch.tensor(state, device = self.device).unsqueeze(0)
+        state = torch.tensor(observation, device = self.device).unsqueeze(0)
         selected_action = self.dqn(state).argmax().item()
 
         return selected_action
