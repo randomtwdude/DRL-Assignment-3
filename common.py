@@ -59,7 +59,7 @@ class Downscaler(gym.ObservationWrapper):
     def __init__(self, env, shape):
         super().__init__(env)
         self.shape = shape
-
+        # technically false but whatever
         self.observation_space = Box(low = 0, high = 255, shape = shape, dtype = np.uint8)
 
     def observation(self, observation):
@@ -77,11 +77,7 @@ class FrameStacker(gym.Wrapper):
         self.frames = deque(maxlen = num_stack)
 
         obs_shape = (num_stack, *self.env.observation_space.shape)
-        self.observation_space = gym.spaces.Box(
-            low = 0, high = 255,
-            shape = obs_shape,
-            dtype = np.uint8
-        )
+        self.observation_space = Box(low = 0, high = 255, shape = obs_shape, dtype = np.uint8)
 
     def reset(self):
         state = self.env.reset()

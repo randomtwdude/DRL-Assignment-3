@@ -4,13 +4,12 @@ import time
 
 class TrainingAgent(Agent):
     def __init__(self, env,
-        obs_size, act_size,
         k_max = 5.0, k_min = 0.1, k_decay = 0.9999, gamma = 0.99,
         replay_buf_size = 20000, batch_size = 128, update_period = 300,
         learning_rate = 1e-4, load = False,
         alpha = 0.6, beta = 0.5
     ):
-        super().__init__(obs_size, act_size, load = load)
+        super().__init__(load = load)
 
         # parameters
         if not load:
@@ -26,7 +25,7 @@ class TrainingAgent(Agent):
         self.update_until  = update_period
 
         # replay buffer
-        self.mem           = ReplayBuffer(replay_buf_size, obs_size, batch_size, alpha = alpha)
+        self.mem           = ReplayBuffer(replay_buf_size, self.obs_size, batch_size, alpha = alpha)
 
         # networks
         # -- dqn network handled in Agent --
@@ -100,16 +99,9 @@ class TrainingAgent(Agent):
         # G_t   = r + gamma * v(s_{t+1})  if state != Terminal
         #       = r                       otherwise
         curr_q_value = self.dqn(states).gather(1, actions)
-
-        # select with softmax weights
-        with torch.no_grad():
-            q_next_online = self.dqn(next_states)
-
-            q_next_online = q_next_online / self.temp
-            next_w = torch.softmax(q_next_online, dim = 1)
-
-            q_next_target = self.dqn_target(next_states)
-            next_q_value = torch.sum(q_next_target * next_w, dim = 1, keepdim = True)
+        next_q_value = self.dqn_target(next_states) \
+            .gather(1, self.dqn(next_states).argmax(dim = 1, keepdim = True)) \
+            .detach()
 
         target = (rewards + self.gamma * next_q_value * (~dones)).to(dev)
         loss = F.smooth_l1_loss(curr_q_value, target, reduction = "none")
@@ -140,15 +132,15 @@ env = Downscaler(env, resolution)
 env = FrameStacker(env, num_stack = frame_batch)
 
 # Train
-agent = TrainingAgent(env, (frame_batch, *resolution), 12,
-    k_max = 10.0, k_min = 0.25, k_decay = 0.9999, gamma = 0.92,
-    replay_buf_size = 20000, batch_size = 192, update_period = 8192,
-    learning_rate = 1e-4, load = False,
+agent = TrainingAgent(env,
+    k_max = 10.0, k_min = 0.5, k_decay = 0.9999, gamma = 0.9136,
+    replay_buf_size = 20000, batch_size = 192, update_period = 512,
+    learning_rate = 1e-4, load = True,
     alpha = 0.6, beta = 0.4
 )
 
-NUM_EPISODES = 1000
-SAVE_INTERVAL = 25
+NUM_EPISODES = 2000
+SAVE_INTERVAL = 100
 
 for episode in range(NUM_EPISODES):
     start = time.time()

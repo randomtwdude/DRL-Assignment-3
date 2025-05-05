@@ -2,16 +2,16 @@ from common import *
 
 class Agent(object):
     # todo: remove sizes
-    def __init__(self, obs_size, act_size, load = True):
-        self.obs_size = obs_size
-        self.act_size = act_size
+    def __init__(self, load = True):
+        self.obs_size = (4, 84, 84)
+        self.act_size = 12
 
         # networks
         self.device = "cpu"
         self.dqn    = Yugi(self.obs_size, self.act_size).to(self.device)
 
         if load:
-            with open("thing_at_10.bin", "rb") as data:
+            with open("thing_at_700.bin", "rb") as data:
                 stuff = torch.load(data)
                 self.dqn.load_state_dict(stuff["model"])
                 self.temp = stuff["temp"]
